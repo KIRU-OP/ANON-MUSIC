@@ -932,6 +932,39 @@ class YouTubeAPI:
             else:
                 return (0, error_msg)
 
+    async def _get_audio_stream_url(self, link: str) -> Optional[str]:
+        """
+        Last-resort audio fallback: ask yt-dlp for a direct playable stream URL
+        (no file written to disk) instead of downloading. Used when the Shruti
+        APIs are down AND every file-download method (primary/fallback API,
+        yt-dlp, concurrent downloader) has failed. Mirrors what video() already
+        does for video streams.
+        """
+        await _check_rate_limit_async()
+        ytdlp_args = [
+            "yt-dlp", *(_yt_dlp_cli_args()), "--no-warnings", "--geo-bypass", "--force-ipv4",
+            "-g", "-f", "bestaudio/best", link
+        ]
+        stdout, stderr = await _exec_proc(*ytdlp_args)
+
+        if stdout:
+            stream_url = stdout.decode().split("\n")[0]
+            if stream_url and stream_url.startswith("http"):
+                return stream_url
+            return None
+
+        error_msg = stderr.decode() if stderr else "Unknown error"
+        if _is_bot_check_error(error_msg):
+            _module_logger.info(
+                "❌ Audio stream fallback: YouTube bot-check triggered — cookies are "
+                "missing/expired. Export fresh cookies and update COOKIE_PATH."
+            )
+        elif "429" in error_msg or "Too Many Requests" in error_msg:
+            _module_logger.info("❌ Audio stream fallback: rate limited (429).")
+        else:
+            _module_logger.info(f"❌ Audio stream fallback failed: {error_msg.strip()[:300]}")
+        return None
+
     async def _try_alternative_format(self, link: str) -> Tuple[int, str]:
         format_options = ["best[height<=480]", "best[ext=mp4]", "best", "worst"]
         for fmt in format_options:
@@ -1110,11 +1143,12 @@ class YouTubeAPI:
                 return await download_audio_concurrent(link)
 
             # Race: first successful result wins
-            tasks = [
-                asyncio.create_task(_try_primary()),
-                asyncio.create_task(_try_ytdlp()),
-                asyncio.create_task(_try_concurrent()),
-            ]
+            task_map = {
+                asyncio.create_task(_try_primary()): "primary/fallback API + yt-dlp",
+                asyncio.create_task(_try_ytdlp()): "yt_dlp_download",
+                asyncio.create_task(_try_concurrent()): "download_audio_concurrent",
+            }
+            tasks = list(task_map.keys())
 
             audio_result = None
             for coro in asyncio.as_completed(tasks):
@@ -1126,7 +1160,8 @@ class YouTubeAPI:
                         for t in tasks:
                             t.cancel()
                         break
-                except Exception:
+                except Exception as e:
+                    _module_logger.info(f"❌ Audio race method '{task_map.get(coro, '?')}' failed: {e}")
                     continue
 
             if audio_result:
@@ -1139,7 +1174,17 @@ class YouTubeAPI:
                         return audio_result, True
                 return audio_result, True
 
-            _module_logger.info("❌ All audio download methods failed")
+            # ── LAST RESORT: every file-download method failed (e.g. both custom
+            # APIs down). Instead of giving up, ask yt-dlp for a direct playable
+            # stream URL — no file needed, so this works even with zero disk space
+            # or when the download APIs are unreachable. ──
+            _module_logger.info("⚠️ All audio download methods failed — trying direct stream URL fallback...")
+            stream_url = await self._get_audio_stream_url(link)
+            if stream_url:
+                _module_logger.info("✅ Audio: direct stream URL fallback succeeded")
+                return stream_url, None
+
+            _module_logger.info("❌ All audio download methods AND stream fallback failed")
             return None, None
 
 YouTube = YouTubeAPI()
