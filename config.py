@@ -102,8 +102,8 @@ START_IMG_URLS = [
     "https://i.ibb.co/LhCMrHZS/file-79.jpg",
 ]
 
-START_IMG_URL = getenv("START_IMG_URL", "https://files.catbox.moe/x3a3nc.jpg")
-PING_IMG_URL = getenv("PING_IMG_URL", "https://files.catbox.moe/x3a3nc.jpg")
+START_IMG_URL = getenv("START_IMG_URL", "https://i.ibb.co/Ps10T7rr/file-76.jpg")
+PING_IMG_URL = getenv("PING_IMG_URL", "https://i.ibb.co/jvMrgNDW/file-80.jpg")
 PLAYLIST_IMG_URL = getenv("PLAYLIST_IMG_URL", "https://files.catbox.moe/v7u8ji.jpg")
 STATS_IMG_URL = getenv("STATS_IMG_URL", "https://files.catbox.moe/7g7j9f.jpg")
 TELEGRAM_AUDIO_URL = getenv("TELEGRAM_AUDIO_URL", "https://files.catbox.moe/fahcob.jpg")
