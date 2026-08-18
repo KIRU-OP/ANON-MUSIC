@@ -90,16 +90,16 @@ file_cache: dict[str, float] = {}
 
 # Bot images used in replies and menus
 START_IMG_URLS = [
-    "https://files.catbox.moe/3b02mr.jpg",
-    "https://files.catbox.moe/32kq7b.jpg",
-    "https://files.catbox.moe/6dpnb9.jpg",
-    "https://files.catbox.moe/wlbp8e.jpg",
-    "https://files.catbox.moe/v7hzfr.jpg",
-    "https://files.catbox.moe/8vfwuk.jpg",
-    "https://files.catbox.moe/3urmnu.jpg",
-    "https://files.catbox.moe/puzag2.jpg",
-    "https://files.catbox.moe/e87w5q.jpg",
-    "https://files.catbox.moe/i84mwm.jpg",
+    "https://i.ibb.co/jCp8BNN/file-75.jpg",
+    "https://i.ibb.co/jCp8BNN/file-75.jpg",
+    "https://i.ibb.co/Ps10T7rr/file-76.jpg",
+    "https://i.ibb.co/Ps10T7rr/file-76.jpg",
+    "https://i.ibb.co/Ndqy8Wng/file-77.jpg",
+    "https://i.ibb.co/Ndqy8Wng/file-77.jpg",
+    "https://i.ibb.co/0yYx7YMt/file-78.jpg",
+    "https://i.ibb.co/0yYx7YMt/file-78.jpg",
+    "https://i.ibb.co/LhCMrHZS/file-79.jpg",
+    "https://i.ibb.co/LhCMrHZS/file-79.jpg",
 ]
 
 START_IMG_URL = getenv("START_IMG_URL", "https://files.catbox.moe/x3a3nc.jpg")
