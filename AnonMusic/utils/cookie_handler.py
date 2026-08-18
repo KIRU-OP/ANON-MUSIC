@@ -8,11 +8,24 @@ from AnonMusic.utils.errors import capture_internal_err
 
 COOKIE_PATH = Path("AnonMusic/assets/cookies.txt")
 
+# values that mean "not actually configured" even though they're truthy strings
+_INVALID_URL_VALUES = {"", "none", "null", "false", "0", "n/a", "na"}
+
 
 def _extract_paste_id(url: str) -> str:
     path = urlsplit(url).path.rstrip("/")
     parts = [p for p in path.split("/") if p]
     return parts[-1] if parts else ""
+
+
+def _is_valid_cookie_url(url: str) -> bool:
+    """Guards against literal 'None'/'null'/empty strings and missing schemes."""
+    if not url:
+        return False
+    if url.strip().lower() in _INVALID_URL_VALUES:
+        return False
+    parsed = urlsplit(url.strip())
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def resolve_raw_cookie_url(url: str) -> str:
@@ -32,10 +45,16 @@ def resolve_raw_cookie_url(url: str) -> str:
 
 @capture_internal_err
 async def fetch_and_store_cookies():
-    if not COOKIE_URL:
-        raise EnvironmentError("⚠️ ᴄᴏᴏᴋɪᴇ_ᴜʀʟ ɴᴏᴛ sᴇᴛ ɪɴ ᴇɴᴠ.")
+    if not _is_valid_cookie_url(COOKIE_URL):
+        raise EnvironmentError(
+            "⚠️ ᴄᴏᴏᴋɪᴇ_ᴜʀʟ ɴᴏᴛ sᴇᴛ (ᴏʀ ɪɴᴠᴀʟɪᴅ) ɪɴ ᴇɴᴠ. "
+            f"ɢᴏᴛ: {COOKIE_URL!r} — sᴇᴛ ᴀ ᴠᴀʟɪᴅ ʜᴛᴛᴘ(s) ᴜʀʟ."
+        )
 
     raw_url = resolve_raw_cookie_url(COOKIE_URL)
+
+    if not _is_valid_cookie_url(raw_url):
+        raise ValueError(f"⚠️ ʀᴇsᴏʟᴠᴇᴅ ᴄᴏᴏᴋɪᴇ ᴜʀʟ ɪs ɪɴᴠᴀʟɪᴅ: {raw_url!r}")
 
     try:
         response = await asyncio.to_thread(
