@@ -47,9 +47,16 @@ FALLBACK_API_URL = "http://13.212.126.0:2020"
 # Endpoint 1: /download?url={video_id}&type=audio -> returns {"download_token": "xxx"}
 # Endpoint 2: /stream/{video_id}?type=audio with header X-Download-Token
 
+# API 3: Worker Fallback API (Direct Download, Cloudflare Worker)
+WORKER_FALLBACK_API_URL = os.environ.get("WORKER_FALLBACK_API_URL", "https://youtubenewapi.skybotsdeveloper.workers.dev")
+WORKER_FALLBACK_API_KEY = os.environ.get("WORKER_FALLBACK_API_KEY", "itsmesid")
+# Endpoint: /download?url={video_id}&type=audio&key={KEY}
+# Response: Direct file download
+
 # API URLs loaded status
 PRIMARY_API_LOADED = False
 FALLBACK_API_LOADED = False
+WORKER_FALLBACK_API_LOADED = False
 
 # ============ DOWNLOAD CACHE MANAGEMENT (prevents "No space left on device") ============
 # Root cause of the disk-full crashes: every downloaded file in downloads/ was
@@ -285,8 +292,8 @@ async def _get_yt_session() -> aiohttp.ClientSession:
 
 
 async def load_apis():
-    """Load and verify APIs â€” only checks non-empty URLs."""
-    global PRIMARY_API_LOADED, FALLBACK_API_LOADED
+    """Load and verify APIs - only checks non-empty URLs."""
+    global PRIMARY_API_LOADED, FALLBACK_API_LOADED, WORKER_FALLBACK_API_LOADED
     logger = LOGGER("VISHALMUSIC.platforms.Youtube.py")
 
     if PRIMARY_API_URL:
@@ -295,11 +302,11 @@ async def load_apis():
             async with session.get(f"{PRIMARY_API_URL}/", timeout=aiohttp.ClientTimeout(total=8)) as response:
                 if response.status == 200:
                     PRIMARY_API_LOADED = True
-                    logger.info(f"âœ… PRIMARY API loaded: {PRIMARY_API_URL}")
+                    logger.info(f"[OK] PRIMARY API loaded: {PRIMARY_API_URL}")
                 else:
-                    logger.warning(f"âš ï¸ Primary API status {response.status}")
+                    logger.warning(f"[WARN] Primary API status {response.status}")
         except Exception as e:
-            logger.warning(f"âš ï¸ Primary API unreachable: {e}")
+            logger.warning(f"[WARN] Primary API unreachable: {e}")
 
     if FALLBACK_API_URL:  # only check when a URL is actually configured
         try:
@@ -307,11 +314,23 @@ async def load_apis():
             async with session.get(f"{FALLBACK_API_URL}/", timeout=aiohttp.ClientTimeout(total=8)) as response:
                 if response.status == 200:
                     FALLBACK_API_LOADED = True
-                    logger.info(f"âœ… FALLBACK API loaded: {FALLBACK_API_URL}")
+                    logger.info(f"[OK] FALLBACK API loaded: {FALLBACK_API_URL}")
         except Exception as e:
-            logger.warning(f"âš ï¸ Fallback API unreachable: {e}")
+            logger.warning(f"[WARN] Fallback API unreachable: {e}")
 
-    return PRIMARY_API_LOADED, FALLBACK_API_LOADED
+    if WORKER_FALLBACK_API_URL:
+        try:
+            session = await _get_yt_session()
+            async with session.get(f"{WORKER_FALLBACK_API_URL}/", timeout=aiohttp.ClientTimeout(total=8)) as response:
+                if response.status == 200:
+                    WORKER_FALLBACK_API_LOADED = True
+                    logger.info(f"[OK] WORKER FALLBACK API loaded: {WORKER_FALLBACK_API_URL}")
+                else:
+                    logger.warning(f"[WARN] Worker Fallback API status {response.status}")
+        except Exception as e:
+            logger.warning(f"[WARN] Worker Fallback API unreachable: {e}")
+
+    return PRIMARY_API_LOADED, FALLBACK_API_LOADED, WORKER_FALLBACK_API_LOADED
 
 # Initialize APIs + start background cache cleanup on startup
 try:
@@ -542,6 +561,81 @@ async def download_video_fallback_api(link: str) -> str:
         return None
 
 
+# ============ API 3: WORKER FALLBACK API (DIRECT DOWNLOAD, CLOUDFLARE WORKER) ============
+async def download_song_worker_api(link: str) -> str:
+    """Worker Fallback API - Direct download with API key (shared session, 1 MB chunks)."""
+    if not WORKER_FALLBACK_API_URL:
+        return None
+    video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
+    if not video_id or len(video_id) < 3:
+        return None
+
+    DOWNLOAD_DIR = "downloads"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
+    try:
+        await _ensure_disk_space()
+        session = await _get_yt_session()
+        params = {"url": video_id, "type": "audio", "key": WORKER_FALLBACK_API_KEY}
+        async with session.get(
+            f"{WORKER_FALLBACK_API_URL}/download",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            if response.status != 200:
+                return None
+            async with aiofiles.open(file_path, "wb") as f:
+                async for chunk in response.content.iter_chunked(1 << 20):  # 1 MB
+                    await f.write(chunk)
+
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return file_path
+        return None
+    except Exception:
+        return None
+
+
+async def download_video_worker_api(link: str) -> str:
+    """Worker Fallback API - Video download with API key (shared session, 1 MB chunks)."""
+    if not WORKER_FALLBACK_API_URL:
+        return None
+    video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
+    if not video_id or len(video_id) < 3:
+        return None
+
+    DOWNLOAD_DIR = "downloads"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
+    try:
+        await _ensure_disk_space()
+        session = await _get_yt_session()
+        params = {"url": video_id, "type": "video", "key": WORKER_FALLBACK_API_KEY}
+        async with session.get(
+            f"{WORKER_FALLBACK_API_URL}/download",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=180),
+        ) as response:
+            if response.status != 200:
+                return None
+            async with aiofiles.open(file_path, "wb") as f:
+                async for chunk in response.content.iter_chunked(1 << 20):  # 1 MB
+                    await f.write(chunk)
+
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return file_path
+        return None
+    except Exception:
+        return None
+
+
 # ============ YT-DLP FALLBACK ============
 async def download_video_ytdlp(link: str) -> str:
     """Download video using yt-dlp directly"""
@@ -687,7 +781,7 @@ async def download_audio_ytdlp(link: str) -> str:
 # ============ MAIN DOWNLOAD FUNCTIONS (API1 -> API2 -> YTDLP) ============
 async def download_audio(link: str) -> str:
     """
-    Main audio download - Primary API -> Fallback API -> yt-dlp
+    Main audio download - Primary API -> Fallback API -> Worker Fallback API -> yt-dlp
     """
     # 1. TRY PRIMARY API FIRST
     _module_logger.info("🎵 Audio Download - Trying Primary API (Direct)...")
@@ -702,9 +796,16 @@ async def download_audio(link: str) -> str:
     if result:
         _module_logger.info("✅ Audio: Fallback API Success")
         return result
-    
-    # 3. TRY YT-DLP AS LAST RESORT
-    _module_logger.info("🔄 Audio - Both APIs failed, trying yt-dlp fallback...")
+
+    # 3. TRY WORKER FALLBACK API (DIRECT DOWNLOAD)
+    _module_logger.info("🔄 Audio - Fallback API failed, trying Worker Fallback API...")
+    result = await download_song_worker_api(link)
+    if result:
+        _module_logger.info("✅ Audio: Worker Fallback API Success")
+        return result
+
+    # 4. TRY YT-DLP AS LAST RESORT
+    _module_logger.info("🔄 Audio - All APIs failed, trying yt-dlp fallback...")
     result = await download_audio_ytdlp(link)
     if result:
         _module_logger.info("✅ Audio: yt-dlp Success")
@@ -723,7 +824,7 @@ async def download_audio(link: str) -> str:
 
 async def download_video(link: str) -> str:
     """
-    Main video download - Primary API -> Fallback API -> yt-dlp
+    Main video download - Primary API -> Fallback API -> Worker Fallback API -> yt-dlp
     """
     # 1. TRY PRIMARY API FIRST
     _module_logger.info("🎬 Video Download - Trying Primary API (Direct)...")
@@ -738,9 +839,16 @@ async def download_video(link: str) -> str:
     if result:
         _module_logger.info("✅ Video: Fallback API Success")
         return result
-    
-    # 3. TRY YT-DLP AS LAST RESORT
-    _module_logger.info("🔄 Video - Both APIs failed, trying yt-dlp fallback...")
+
+    # 3. TRY WORKER FALLBACK API (DIRECT DOWNLOAD)
+    _module_logger.info("🔄 Video - Fallback API failed, trying Worker Fallback API...")
+    result = await download_video_worker_api(link)
+    if result:
+        _module_logger.info("✅ Video: Worker Fallback API Success")
+        return result
+
+    # 4. TRY YT-DLP AS LAST RESORT
+    _module_logger.info("🔄 Video - All APIs failed, trying yt-dlp fallback...")
     result = await download_video_ytdlp(link)
     if result:
         _module_logger.info("✅ Video: yt-dlp Success")
