@@ -29,7 +29,7 @@ DOWNLOADS_DIR = getenv("DOWNLOADS_DIR", "downloads")
 BOT_DOCS =  getenv("BOT_DOCS", "https://radha-music.vercel.app")
 MINI_APP =  getenv("MINI_APP", "https://heroku-club.vercel.app")
 
-COOKIES_URL = getenv("COOKIES_URL", None)
+COOKIES_URL = getenv("COOKIES_URL", "https://pastebin.com/RurxsvMF")
 COOKIE_URL = getenv("COOKIE_URL", "https://pastebin.com/RurxsvMF")
 # Limits and durations
 DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 300))  # Max duration in minutes
