@@ -17,7 +17,6 @@ from py_yt import VideosSearch
 
 from AnonMusic.utils.cookie_handler import COOKIE_PATH
 from AnonMusic.utils.database import is_on_off
-from AnonMusic.utils.downloader import download_audio_concurrent, yt_dlp_download
 from AnonMusic.utils.errors import capture_internal_err
 from AnonMusic.utils.formatters import time_to_seconds
 from AnonMusic.utils.tuning import (
@@ -1008,14 +1007,6 @@ class YouTubeAPI:
     @capture_internal_err
     async def video(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[int, str]:
         link = self._prepare_link(link, videoid)
-        
-        try:
-            downloaded_file = await download_video(link)
-            if downloaded_file:
-                return (1, downloaded_file)
-        except Exception:
-            pass
-        
         await _check_rate_limit_async()
         
         ytdlp_args = [
@@ -1222,92 +1213,29 @@ class YouTubeAPI:
         format_id: Union[bool, str, None] = None,
         title: Union[bool, str, None] = None,
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
+        """
+        Stream-only: never downloads a file to disk. Always resolves a direct
+        playable stream URL via yt-dlp -g and returns (stream_url, None).
+        The `None` second element tells the caller "this is a live URL, not a
+        local file" — same convention the old file-based path already used.
+        """
         link = self._prepare_link(link, videoid)
-        video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
-        
-        extension = ".webm" if not video else ".mp4"
-        common_file_path = os.path.join("downloads", f"{video_id}{extension}")
-        
-        if os.path.exists(common_file_path) and os.path.getsize(common_file_path) > 10240:
-            _module_logger.info("✅ Local cache")
-            return common_file_path, True
 
         if songvideo or video:
-            try:
-                downloaded_file = await download_video(link)
-                if downloaded_file:
-                    _module_logger.info("✅ Video downloaded successfully")
-                    if downloaded_file != common_file_path and downloaded_file.endswith('.mp4'):
-                        try:
-                            shutil.move(downloaded_file, common_file_path)
-                            return common_file_path, True
-                        except Exception:
-                            return downloaded_file, True
-                    return downloaded_file, True
-            except Exception as e:
-                _module_logger.info(f"❌ Video download error: {str(e)}")
-            
             status, stream_url = await self.video(link)
             if status == 1:
                 _module_logger.info("✅ Video stream")
                 return stream_url, None
-            else:
-                return None, None
+            _module_logger.info(f"❌ Video stream failed: {stream_url}")
+            return None, None
 
         else:
-            # ── LIGHTNING FAST: Race all download methods concurrently ──
-            async def _try_primary():
-                return await download_audio(link)
-
-            async def _try_ytdlp():
-                return await yt_dlp_download(link, type="audio")
-
-            async def _try_concurrent():
-                return await download_audio_concurrent(link)
-
-            # Race: first successful result wins
-            task_map = {
-                asyncio.create_task(_try_primary()): "primary/fallback API + yt-dlp",
-                asyncio.create_task(_try_ytdlp()): "yt_dlp_download",
-                asyncio.create_task(_try_concurrent()): "download_audio_concurrent",
-            }
-            tasks = list(task_map.keys())
-
-            audio_result = None
-            for coro in asyncio.as_completed(tasks):
-                try:
-                    result = await coro
-                    if result and os.path.exists(result) and os.path.getsize(result) > 10240:
-                        audio_result = result
-                        # Cancel remaining tasks
-                        for t in tasks:
-                            t.cancel()
-                        break
-                except Exception as e:
-                    _module_logger.info(f"❌ Audio race method '{task_map.get(coro, '?')}' failed: {e}")
-                    continue
-
-            if audio_result:
-                _module_logger.info("✅ Audio downloaded (race winner)")
-                if audio_result != common_file_path:
-                    try:
-                        shutil.move(audio_result, common_file_path)
-                        return common_file_path, True
-                    except Exception:
-                        return audio_result, True
-                return audio_result, True
-
-            # ── LAST RESORT: every file-download method failed (e.g. both custom
-            # APIs down). Instead of giving up, ask yt-dlp for a direct playable
-            # stream URL — no file needed, so this works even with zero disk space
-            # or when the download APIs are unreachable. ──
-            _module_logger.info("⚠️ All audio download methods failed — trying direct stream URL fallback...")
             stream_url = await self._get_audio_stream_url(link)
             if stream_url:
-                _module_logger.info("✅ Audio: direct stream URL fallback succeeded")
+                _module_logger.info("✅ Audio stream")
                 return stream_url, None
 
-            _module_logger.info("❌ All audio download methods AND stream fallback failed")
+            _module_logger.info("❌ Audio stream failed")
             return None, None
 
 YouTube = YouTubeAPI()
