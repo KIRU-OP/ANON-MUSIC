@@ -1,200 +1,120 @@
 """
-multi_platform_fallback.py
+AnonMusic/utils/cookie_handler.py
 
-Drop-in fallback resolver for AnonMusic-style Telegram music bots.
+Fixes: ImportError: cannot import name 'COOKIE_PATH' from 'AnonMusic.utils.cookie_handler'
 
-Chain: YouTube -> SoundCloud (full track, via yt-dlp) -> Deezer (30s preview, official API)
+This module now exposes COOKIE_PATH as a module-level constant so that
+`from AnonMusic.utils.cookie_handler import COOKIE_PATH` in youtube.py works.
 
-WIRING NOTES (you must adjust these to match your project):
-  1. Replace the `youtube_download(query)` stub below with a call to your
-     existing YouTube module, e.g.:
-         from AnonMusic.platforms.Youtube import YouTubeAPI
-         yt = YouTubeAPI()
-         file_path, direct = await yt.download(link, ...)
-  2. This module assumes yt-dlp is already installed (it is, since your
-     YouTube backend already depends on it).
-  3. Call `resolve_audio(query)` from wherever you currently call your
-     YouTube-only download function (usually in your /play command handler
-     or in AnonMusic/platforms/__init__.py's stream resolver).
-  4. Adjust LOGGER to your project's logger (this file uses a local one).
+It also includes the cookie-download logic (moved here so everything cookie-
+related lives in one place — delete/merge your old standalone fetch script
+once this is wired in, to avoid two different COOKIE_PATH definitions).
 """
 
 import asyncio
 import logging
-import os
-import tempfile
-from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
-import yt_dlp
 
-LOGGER = logging.getLogger("AnonMusic.fallback")
+from config import COOKIE_URL
 
-DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "downloads")
-
-
-class AllPlatformsFailedError(Exception):
-    """Raised when YouTube, SoundCloud, and Deezer all fail to provide audio."""
-
-
-@dataclass
-class ResolvedAudio:
-    source: str          # "youtube" | "soundcloud" | "deezer_preview"
-    file_path: str        # local path to the audio file
-    title: str
-    duration: Optional[int] = None   # seconds; None for previews or unknown
-    is_preview: bool = False          # True only for Deezer 30s clips
-
+LOGGER = logging.getLogger("AnonMusic.cookie_handler")
 
 # ---------------------------------------------------------------------------
-# 1. YOUTUBE (your existing backend — plug in here)
+# THIS is the constant youtube.py (and anything else) should import.
 # ---------------------------------------------------------------------------
+COOKIE_PATH = Path("AnonMusic/assets/cookies.txt")
 
-async def youtube_download(query: str) -> ResolvedAudio:
+_INVALID_URL_VALUES = {"", "none", "null", "false", "0", "n/a", "na"}
+
+
+def _extract_paste_id(url: str) -> str:
+    path = urlsplit(url).path.rstrip("/")
+    parts = [p for p in path.split("/") if p]
+    return parts[-1] if parts else ""
+
+
+def _is_valid_cookie_url(url: str) -> bool:
+    if not url:
+        return False
+    if str(url).strip().lower() in _INVALID_URL_VALUES:
+        return False
+    parsed = urlsplit(str(url).strip())
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def resolve_raw_cookie_url(url: str) -> str:
+    url = (url or "").strip()
+    low = url.lower()
+
+    if "pastebin.com/" in low and "/raw/" not in low:
+        paste_id = _extract_paste_id(url)
+        return f"https://pastebin.com/raw/{paste_id}" if paste_id else url
+
+    if "batbin.me/" in low and "/raw/" not in low:
+        paste_id = _extract_paste_id(url)
+        return f"https://batbin.me/raw/{paste_id}" if paste_id else url
+
+    return url
+
+
+async def fetch_and_store_cookies() -> bool:
     """
-    STUB — replace this body with your project's real YouTube download call.
-    Must raise an exception (any Exception) on failure so the fallback chain
-    proceeds — do not swallow errors here.
+    Downloads cookies from COOKIE_URL (config.py) and saves them to COOKIE_PATH.
+    Returns True on success, False on failure (logs the reason either way,
+    never raises — so a missing/invalid COOKIE_URL doesn't crash bot startup).
     """
-    from AnonMusic.platforms.Youtube import YouTubeAPI  # your existing module
-
-    yt = YouTubeAPI()
-    # Example shape — adjust to match your actual method signature/return:
-    file_path, direct_link, title, duration = await yt.download(query)
-    if not file_path:
-        raise RuntimeError("YouTube backend returned no file path")
-    return ResolvedAudio(source="youtube", file_path=file_path, title=title, duration=duration)
-
-
-# ---------------------------------------------------------------------------
-# 2. SOUNDCLOUD (full track, no cookies needed)
-# ---------------------------------------------------------------------------
-
-def _soundcloud_search_and_download_sync(query: str) -> ResolvedAudio:
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    out_tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": out_tmpl,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "default_search": "scsearch1",  # SoundCloud search, top 1 result
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=True)
-        # extract_info on a search query returns a playlist-like dict with 'entries'
-        if "entries" in info:
-            if not info["entries"]:
-                raise RuntimeError("SoundCloud returned no results")
-            info = info["entries"][0]
-
-        file_path = ydl.prepare_filename(info)
-        # after postprocessing, extension becomes .mp3
-        base, _ = os.path.splitext(file_path)
-        mp3_path = base + ".mp3"
-        final_path = mp3_path if os.path.exists(mp3_path) else file_path
-
-        return ResolvedAudio(
-            source="soundcloud",
-            file_path=final_path,
-            title=info.get("title", query),
-            duration=info.get("duration"),
+    if not _is_valid_cookie_url(COOKIE_URL):
+        LOGGER.warning(
+            f"⚠️ COOKIE_URL not set or invalid in env. Got: {COOKIE_URL!r}. "
+            "Skipping cookie download — YouTube playback may fail bot-check."
         )
+        return False
 
+    raw_url = resolve_raw_cookie_url(COOKIE_URL)
 
-async def soundcloud_download(query: str) -> ResolvedAudio:
-    return await asyncio.to_thread(_soundcloud_search_and_download_sync, query)
-
-
-# ---------------------------------------------------------------------------
-# 3. DEEZER (official public API — 30-second preview only, legal last resort)
-# ---------------------------------------------------------------------------
-
-def _deezer_search_sync(query: str) -> dict:
-    resp = requests.get(
-        "https://api.deezer.com/search",
-        params={"q": query, "limit": 1},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    results = data.get("data") or []
-    if not results:
-        raise RuntimeError("Deezer returned no results")
-    return results[0]
-
-
-async def deezer_preview_download(query: str) -> ResolvedAudio:
-    track = await asyncio.to_thread(_deezer_search_sync, query)
-    preview_url = track.get("preview")
-    if not preview_url:
-        raise RuntimeError("Deezer track has no preview clip available")
-
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(suffix=".mp3", dir=DOWNLOAD_DIR)
-    os.close(fd)
-
-    def _fetch():
-        r = requests.get(preview_url, timeout=15)
-        r.raise_for_status()
-        with open(tmp_path, "wb") as f:
-            f.write(r.content)
-
-    await asyncio.to_thread(_fetch)
-
-    return ResolvedAudio(
-        source="deezer_preview",
-        file_path=tmp_path,
-        title=track.get("title", query),
-        duration=30,
-        is_preview=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# ORCHESTRATOR — call this one function from your bot
-# ---------------------------------------------------------------------------
-
-async def resolve_audio(query: str) -> ResolvedAudio:
-    """
-    Try YouTube, then SoundCloud, then Deezer preview.
-    Returns a ResolvedAudio on the first success.
-    Raises AllPlatformsFailedError if every platform fails.
-    """
-    errors = []
+    if not _is_valid_cookie_url(raw_url):
+        LOGGER.warning(f"⚠️ Resolved cookie URL is invalid: {raw_url!r}")
+        return False
 
     try:
-        LOGGER.info(f"🎵 Trying YouTube for: {query}")
-        return await youtube_download(query)
-    except Exception as e:
-        LOGGER.warning(f"⚠️ YouTube failed for '{query}': {e}")
-        errors.append(f"YouTube: {e}")
-
-    try:
-        LOGGER.info(f"🎵 Falling back to SoundCloud for: {query}")
-        return await soundcloud_download(query)
-    except Exception as e:
-        LOGGER.warning(f"⚠️ SoundCloud failed for '{query}': {e}")
-        errors.append(f"SoundCloud: {e}")
-
-    try:
-        LOGGER.info(f"🎵 Falling back to Deezer preview for: {query}")
-        return await deezer_preview_download(query)
-    except Exception as e:
-        LOGGER.warning(f"⚠️ Deezer preview failed for '{query}': {e}")
-        errors.append(f"Deezer: {e}")
-
-    raise AllPlatformsFailedError(
-        "All platforms failed to provide audio for '{}':\n{}".format(
-            query, "\n".join(errors)
+        response = await asyncio.to_thread(
+            requests.get,
+            raw_url,
+            timeout=15,
+            headers={"User-Agent": "anonmusic-cookie-fetcher/1.0"},
         )
-)
+        response.raise_for_status()
+    except Exception as e:
+        LOGGER.warning(f"⚠️ Can't fetch cookies: {e}")
+        return False
+
+    cookies = (response.text or "").strip()
+
+    if not cookies.startswith("# Netscape"):
+        LOGGER.warning("⚠️ Invalid cookie format. Needs Netscape format.")
+        return False
+
+    if len(cookies) < 100:
+        LOGGER.warning("⚠️ Cookie content too short. Possibly invalid.")
+        return False
+
+    try:
+        COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        COOKIE_PATH.write_text(cookies, encoding="utf-8")
+    except Exception as e:
+        LOGGER.warning(f"⚠️ Failed to save cookies: {e}")
+        return False
+
+    LOGGER.info(f"✅ Cookies saved to {COOKIE_PATH}")
+    return True
+
+
+def cookie_txt_file() -> str:
+    """
+    Some AnonXMusic forks call a function like this instead of importing
+    COOKIE_PATH directly. Kept here for compatibility with older call sites.
+    """
+    return str(COOKIE_PATH)
