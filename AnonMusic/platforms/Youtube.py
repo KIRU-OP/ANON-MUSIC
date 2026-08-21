@@ -975,7 +975,13 @@ class YouTubeAPI:
         info = await self._fetch_video_info(self._prepare_link(link, videoid))
         if not info:
             raise ValueError("Video not found")
-        dt = info.get("duration")
+        # NOTE: use "" (not None) as the "no duration" sentinel — livestreams and
+        # some videos have no duration, but returning bare None here caused
+        # "can only concatenate str (not 'NoneType') to str" crashes in any
+        # caller that does `title + duration` style string concatenation.
+        # "" is falsy just like None, so any `if duration:` check elsewhere
+        # keeps working exactly the same.
+        dt = info.get("duration") or ""
         ds = int(time_to_seconds(dt)) if dt else 0
         thumb = (info.get("thumbnail") or info.get("thumbnails", [{}])[0].get("url", "")).split("?")[0]
         return info.get("title", ""), dt, ds, thumb, info.get("id", "")
@@ -986,9 +992,10 @@ class YouTubeAPI:
         return info.get("title", "") if info else ""
 
     @capture_internal_err
-    async def duration(self, link: str, videoid: Union[str, bool, None] = None) -> Optional[str]:
+    async def duration(self, link: str, videoid: Union[str, bool, None] = None) -> str:
         info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return info.get("duration") if info else None
+        # "" instead of None — see note in details() above.
+        return (info.get("duration") or "") if info else ""
 
     @capture_internal_err
     async def thumbnail(self, link: str, videoid: Union[str, bool, None] = None) -> str:
