@@ -35,7 +35,7 @@ _formats_cache: Dict[str, Tuple[float, List[Dict], str]] = {}
 _formats_lock = asyncio.Lock()
 
 # ============ API CONFIGURATION ============
-SHRUTI_API_KEY = ""
+SHRUTI_API_KEY = "ShrutiBotsOU2K57cQppXuv38Cz2Xf"
 
 # API 1: Primary Shruti API (Direct Download)
 PRIMARY_API_URL = "https://api.shrutibots.site"
@@ -1013,7 +1013,9 @@ class YouTubeAPI:
         
         ytdlp_args = [
             "yt-dlp", *(_yt_dlp_cli_args()), "--no-warnings", "--geo-bypass", "--force-ipv4",
-            "-g", "-f", "best[height<=?720][width<=?1280]/best", link
+            "-g", "-f",
+            "best[height<=?720][width<=?1280][acodec!=none]/best[acodec!=none]/best",
+            link
         ]
         
         stdout, stderr = await _exec_proc(*ytdlp_args)
@@ -1051,7 +1053,7 @@ class YouTubeAPI:
         await _check_rate_limit_async()
         ytdlp_args = [
             "yt-dlp", *(_yt_dlp_cli_args()), "--no-warnings", "--geo-bypass", "--force-ipv4",
-            "-g", "-f", "bestaudio/best", link
+            "-g", "-f", "bestaudio/best[acodec!=none]/best", link
         ]
         stdout, stderr = await _exec_proc(*ytdlp_args)
 
@@ -1074,7 +1076,13 @@ class YouTubeAPI:
         return None
 
     async def _try_alternative_format(self, link: str) -> Tuple[int, str]:
-        format_options = ["best[height<=480]", "best[ext=mp4]", "best", "worst"]
+        format_options = [
+            "best[height<=480][acodec!=none]",
+            "best[ext=mp4][acodec!=none]",
+            "best[acodec!=none]",
+            "worst[acodec!=none]",
+            "worst",
+        ]
         for fmt in format_options:
             stdout, stderr = await _exec_proc("yt-dlp", *(_yt_dlp_cli_args()), "--no-warnings", "-g", "-f", fmt, link)
             if stdout:
