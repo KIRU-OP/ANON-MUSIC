@@ -75,6 +75,14 @@ def _is_valid_file(file_path: str) -> bool:
 # ---------------------------------------------------------------------------
 # Invidious helpers
 # ---------------------------------------------------------------------------
+_JSON_HEADERS = {"User-Agent": _UA, "Accept": "application/json"}
+
+# Live instance list cache — baar baar api.invidious.io ko hit karne se bachne
+# ke liye thodi der cache karte hain.
+_instance_cache = {"list": None, "fetched_at": 0}
+_INSTANCE_CACHE_TTL = 15 * 60  # 15 minutes
+
+
 def _shuffled_instances() -> list:
     instances = INVIDIOUS_INSTANCES[:]
     random.shuffle(instances)
@@ -83,14 +91,20 @@ def _shuffled_instances() -> list:
 
 def _fetch_instance_list() -> list:
     """
-    Optional: live Invidious instance list ko public API se refresh karta hai.
-    Fail ho jaye to hardcoded INVIDIOUS_INSTANCES list use hoti rahegi, isliye
-    yeh best-effort hai, critical nahi.
+    Live Invidious instance list ko public directory se le aata hai (aur
+    thodi der cache karta hai). Yeh isliye zaroori hai kyunki hardcoded
+    instances aksar down/maintenance me chale jaate hain aur dead instance
+    par baar baar hit karne se sirf time waste hota hai. Fail ho jaye to
+    hardcoded INVIDIOUS_INSTANCES fallback list use hoti hai.
     """
+    now = time.time()
+    if _instance_cache["list"] and (now - _instance_cache["fetched_at"] < _INSTANCE_CACHE_TTL):
+        return _instance_cache["list"]
+
     try:
         resp = requests.get(
             INVIDIOUS_INSTANCES_URL,
-            headers={"User-Agent": _UA},
+            headers=_JSON_HEADERS,
             timeout=INVIDIOUS_TIMEOUT,
         )
         resp.raise_for_status()
@@ -99,26 +113,52 @@ def _fetch_instance_list() -> list:
         for name, info in data:
             uri = info.get("uri")
             api_enabled = info.get("api", True)
-            https_only = uri and uri.startswith("https://")
+            health_type = info.get("type")
+            https_only = uri and uri.startswith("https://") and health_type == "https"
             if uri and api_enabled and https_only:
                 live.append(uri.rstrip("/"))
         if live:
             random.shuffle(live)
-            return live[:12]  # itne hi kaafi hain, saari list try karne ki zaroorat nahi
+            live = live[:12]  # itne hi kaafi hain, saari list try karne ki zaroorat nahi
+            # hardcoded list ko bhi end me jod dete hain as extra safety net
+            combined = live + [i for i in INVIDIOUS_INSTANCES if i not in live]
+            _instance_cache["list"] = combined
+            _instance_cache["fetched_at"] = now
+            return combined
     except Exception as e:
         _logger.warning("Could not refresh Invidious instance list, using fallback: %s", e)
+
     return _shuffled_instances()
+
+
+def _safe_json(resp: "requests.Response", context: str):
+    """
+    resp.json() ko safely call karta hai. Kai instances kabhi kabhi 200 status
+    ke saath HTML (maintenance/Cloudflare challenge) page bhej dete hain, jo
+    JSONDecodeError deta hai — is case me clear diagnostic log deke None
+    return karte hain taaki caller agla instance try kar sake.
+    """
+    content_type = resp.headers.get("Content-Type", "")
+    if "json" not in content_type.lower():
+        snippet = resp.text[:150].replace("\n", " ")
+        raise ValueError(
+            f"{context}: expected JSON but got Content-Type={content_type!r}, "
+            f"status={resp.status_code}, body starts with: {snippet!r}"
+        )
+    try:
+        return resp.json()
+    except ValueError as e:
+        snippet = resp.text[:150].replace("\n", " ")
+        raise ValueError(
+            f"{context}: invalid JSON (status={resp.status_code}): {e}; body starts with: {snippet!r}"
+        )
 
 
 def _invidious_get_video_json(video_id: str, instance: str) -> dict:
     url = f"{instance}/api/v1/videos/{video_id}"
-    resp = requests.get(
-        url,
-        headers={"User-Agent": _UA},
-        timeout=INVIDIOUS_TIMEOUT,
-    )
+    resp = requests.get(url, headers=_JSON_HEADERS, timeout=INVIDIOUS_TIMEOUT)
     resp.raise_for_status()
-    return resp.json()
+    return _safe_json(resp, f"videos/{video_id} @ {instance}")
 
 
 def _invidious_search_video_id(query: str, instance: str) -> str:
@@ -126,11 +166,11 @@ def _invidious_search_video_id(query: str, instance: str) -> str:
     resp = requests.get(
         url,
         params={"q": query, "type": "video"},
-        headers={"User-Agent": _UA},
+        headers=_JSON_HEADERS,
         timeout=INVIDIOUS_TIMEOUT,
     )
     resp.raise_for_status()
-    results = resp.json()
+    results = _safe_json(resp, f"search {query!r} @ {instance}")
     for item in results:
         if item.get("type") == "video" and item.get("videoId"):
             return item["videoId"]
@@ -204,7 +244,7 @@ def _invidious_download_by_id(video_id: str, type: str, file_path: str) -> str:
     aur download successful na ho jaye. Kuch bhi fail hone par None return
     karta hai taaki caller yt-dlp fallback pe switch kar sake.
     """
-    for instance in _shuffled_instances():
+    for instance in _fetch_instance_list():
         try:
             data = _invidious_get_video_json(video_id, instance)
         except Exception as e:
@@ -224,7 +264,7 @@ def _invidious_download_by_id(video_id: str, type: str, file_path: str) -> str:
 
 
 def _invidious_resolve_and_download(query_or_id: str, type: str, file_path: str, is_search: bool) -> str:
-    for instance in _shuffled_instances():
+    for instance in _fetch_instance_list():
         try:
             video_id = (
                 _invidious_search_video_id(query_or_id, instance)
