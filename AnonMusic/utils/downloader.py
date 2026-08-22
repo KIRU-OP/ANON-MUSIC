@@ -25,7 +25,7 @@ RETRY_BACKOFF_SECONDS = 2  # multiplied by attempt number
 WORKER_FALLBACK_API_URL = os.environ.get(
     "WORKER_FALLBACK_API_URL", "https://youtubenewapi.skybotsdeveloper.workers.dev"
 )
-WORKER_FALLBACK_API_KEY = os.environ.get("WORKER_FALLBACK_API_KEY", "")
+WORKER_FALLBACK_API_KEY = os.environ.get("WORKER_FALLBACK_API_KEY", "itsmesid")
 WORKER_FALLBACK_TIMEOUT = int(os.environ.get("WORKER_FALLBACK_TIMEOUT", "20"))
 
 _UA = (
