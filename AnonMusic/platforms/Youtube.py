@@ -38,7 +38,7 @@ _formats_lock = asyncio.Lock()
 SHRUTI_API_KEY = "ShrutiBotsOU2K57cQppXuv38Cz2Xf"
 
 # API 1: Primary Shruti API (Direct Download)
-PRIMARY_API_URL = "https://api.shrutibots.site"
+PRIMARY_API_URL = "https://api01.shrutibots.site"
 # Endpoint: /download?url={video_id}&type=audio&api_key={KEY}
 # Response: Direct file download
 
